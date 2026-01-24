@@ -49,6 +49,7 @@ impl SmoothedValue {
         self.current
     }
 
+    #[cfg(not(target_os = "macos"))]
     pub fn get_velocity(&self) -> f32 {
         (self.desired - self.current).abs()
     }

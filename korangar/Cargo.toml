@@ -53,6 +53,10 @@ winit = { workspace = true }
 [build-dependencies]
 sevenz-rust2 = { workspace = true, features = ["compress"] }
 
+# Platform-specific dependencies
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+wgpu = { workspace = true, features = ["static-dxc", "spirv", "vulkan-portability"] }
+
 [features]
 debug = ["korangar-audio/debug", "korangar-debug", "korangar-interface/debug", "korangar-networking/debug", "ragnarok-packets/debug"]
 plain = ["korangar-debug/plain"]

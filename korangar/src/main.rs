@@ -2628,6 +2628,16 @@ impl Client {
             let shadow_method = *self.client_state.follow(client_state().graphics_settings().shadow_method());
             let shadow_detail = *self.client_state.follow(client_state().graphics_settings().shadow_detail());
             let sdsm_enabled = *self.client_state.follow(client_state().graphics_settings().sdsm());
+
+            // WORKAROUND: Disable SDSM on Vulkan/MoltenVK due to synchronization bug
+            // SDSM compute shaders don't properly sync with shadow rendering on Vulkan
+            // backend. This causes shadows to disappear when camera is not
+            // moving. TODO: Add proper memory barriers between SDSM compute
+            // pass and shadow rendering
+            #[cfg(target_os = "macos")]
+            let use_sdsm = false;
+
+            #[cfg(not(target_os = "macos"))]
             let use_sdsm = sdsm_enabled & !self.player_camera.is_rotating_or_zooming_fast();
 
             let ambient_light_color = map.ambient_light_color();
