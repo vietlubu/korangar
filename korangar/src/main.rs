@@ -61,6 +61,7 @@ use korangar_debug::profile_block;
 #[cfg(feature = "debug")]
 use korangar_debug::profiling::Profiler;
 use korangar_interface::Interface;
+use korangar_interface::application::Clip;
 use korangar_interface::layout::MouseButton;
 use korangar_networking::{
     DisconnectReason, HotkeyState, LoginServerLoginData, MessageColor, NetworkEvent, NetworkEventBuffer, NetworkingSystem, SellItem,
@@ -84,14 +85,7 @@ use settings::{
 use state::localization::Localization;
 use state::theme::{CursorThemePathExt, IndicatorThemePathExt, InterfaceThemePathExt, WorldThemePathExt};
 use state::{
-    ChatMessage,
-    ClientState,
-    ClientStatePathExt,
-    ClientStateRootExt,
-    ItemObtainNotification,
-    client_state,
-    client_theme,
-    this_entity,
+    ChatMessage, ClientState, ClientStatePathExt, ClientStateRootExt, ItemObtainNotification, client_state, client_theme, this_entity,
     this_player,
 };
 #[cfg(feature = "debug")]
@@ -108,8 +102,6 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::PhysicalKey;
 use winit::window::{Icon, Window, WindowId};
-
-use korangar_interface::application::Clip;
 
 use crate::graphics::*;
 use crate::input::{InputEvent, InputSystem};
@@ -492,14 +484,20 @@ impl Client {
             sub_y,
         } = pending;
 
-        if let Some(mut item) =
-            GroundItem::new(map, item_id, item_entity_id, is_identified, count, position, sub_x, sub_y, client_tick)
-        {
+        if let Some(mut item) = GroundItem::new(
+            map,
+            item_id,
+            item_entity_id,
+            is_identified,
+            count,
+            position,
+            sub_x,
+            sub_y,
+            client_tick,
+        ) {
             let entity_part_files = item.get_entity_part_files(library);
 
-            if let Some(animation_data) =
-                async_loader.request_ground_item_animation_data_load(item_entity_id, entity_part_files)
-            {
+            if let Some(animation_data) = async_loader.request_ground_item_animation_data_load(item_entity_id, entity_part_files) {
                 item.set_animation_data(animation_data);
             }
 
@@ -1413,14 +1411,7 @@ impl Client {
 
                     if let Some(map) = self.map.as_ref() {
                         let ground_items = self.client_state.follow_mut(client_state().ground_items());
-                        Self::spawn_ground_item(
-                            map,
-                            pending,
-                            client_tick,
-                            &self.library,
-                            &self.async_loader,
-                            ground_items,
-                        );
+                        Self::spawn_ground_item(map, pending, client_tick, &self.library, &self.async_loader, ground_items);
                     } else {
                         self.pending_ground_items.push(pending);
                     }
@@ -1429,8 +1420,7 @@ impl Client {
                     self.client_state
                         .follow_mut(client_state().ground_items())
                         .retain(|item| item.get_entity_id() != item_entity_id);
-                    self.pending_ground_items
-                        .retain(|pending| pending.item_entity_id != item_entity_id);
+                    self.pending_ground_items.retain(|pending| pending.item_entity_id != item_entity_id);
 
                     let buffered_pickup_item = self.client_state.follow_mut(client_state().buffered_pickup_item());
                     if buffered_pickup_item.is_some_and(|buffered_id| buffered_id == item_entity_id) {
@@ -1579,10 +1569,7 @@ impl Client {
                         self.particle_holder.spawn_particle(particle);
                     }
                 }
-                NetworkEvent::EntityPickUpItem {
-                    entity_id,
-                    item_entity_id,
-                } => {
+                NetworkEvent::EntityPickUpItem { entity_id, item_entity_id } => {
                     let item_position = self
                         .client_state
                         .follow(client_state().ground_items())
@@ -1702,22 +1689,13 @@ impl Client {
                     count,
                     is_identified,
                 } => {
-                    let name = self
-                        .library
-                        .get::<ItemName>(ItemNameKey {
-                            item_id,
-                            is_identified,
-                        })
-                        .to_string();
+                    let name = self.library.get::<ItemName>(ItemNameKey { item_id, is_identified }).to_string();
                     let message = format!("You got {name} ({count}).");
                     self.client_state
                         .follow_mut(client_state().chat_messages())
                         .push(ChatMessage::new(message, MessageColor::Information));
 
-                    let resource_name = self.library.get::<ItemResource>(ItemResourceKey {
-                        item_id,
-                        is_identified,
-                    });
+                    let resource_name = self.library.get::<ItemResource>(ItemResourceKey { item_id, is_identified });
                     let full_path = format!("유저인터페이스\\item\\{resource_name}.bmp");
                     let texture =
                         self.async_loader
@@ -2305,18 +2283,17 @@ impl Client {
                             .map(|item| item.get_tile_position());
 
                         if let (Some(player_position), Some(item_position)) = (player_position, item_position) {
-                            let in_range =
-                                player_position.x.abs_diff(item_position.x).max(player_position.y.abs_diff(item_position.y))
-                                    <= ITEM_PICKUP_RANGE.0;
+                            let in_range = player_position
+                                .x
+                                .abs_diff(item_position.x)
+                                .max(player_position.y.abs_diff(item_position.y))
+                                <= ITEM_PICKUP_RANGE.0;
 
                             if in_range {
                                 let _ = self.networking_system.pick_up_item(entity_id);
                                 *self.client_state.follow_mut(client_state().buffered_pickup_item()) = None;
                                 *self.client_state.follow_mut(client_state().buffered_attack_entity()) = None;
-                            } else if let Some(path) =
-                                self.path_finder
-                                    .find_walkable_path(&**map, player_position, item_position)
-                            {
+                            } else if let Some(path) = self.path_finder.find_walkable_path(&**map, player_position, item_position) {
                                 if let Some(nearest_tile) = path.last() {
                                     let _ = self.networking_system.player_move(WorldPosition {
                                         x: nearest_tile.x,
@@ -2694,10 +2671,7 @@ impl Client {
                             .follow_mut(client_state().inventory())
                             .update_item_sprite(item_id, texture.clone());
 
-                        if let Some(notification) = self
-                            .client_state
-                            .follow_mut(client_state().item_obtain_notification())
-                            .as_mut()
+                        if let Some(notification) = self.client_state.follow_mut(client_state().item_obtain_notification()).as_mut()
                             && notification.item_id == item_id
                         {
                             notification.metadata.texture = Some(texture);
@@ -2721,14 +2695,7 @@ impl Client {
                             if !pending.is_empty() {
                                 let ground_items = self.client_state.follow_mut(client_state().ground_items());
                                 for item in pending {
-                                    Self::spawn_ground_item(
-                                        &map,
-                                        item,
-                                        client_tick,
-                                        &self.library,
-                                        &self.async_loader,
-                                        ground_items,
-                                    );
+                                    Self::spawn_ground_item(&map, item, client_tick, &self.library, &self.async_loader, ground_items);
                                 }
                             }
 
@@ -2753,14 +2720,7 @@ impl Client {
                             if !pending.is_empty() {
                                 let ground_items = self.client_state.follow_mut(client_state().ground_items());
                                 for item in pending {
-                                    Self::spawn_ground_item(
-                                        &map,
-                                        item,
-                                        client_tick,
-                                        &self.library,
-                                        &self.async_loader,
-                                        ground_items,
-                                    );
+                                    Self::spawn_ground_item(&map, item, client_tick, &self.library, &self.async_loader, ground_items);
                                 }
                             }
 
@@ -3370,8 +3330,7 @@ impl Client {
                         }
                         _ => (MouseCursorState::Default, None),
                     };
-                    self.mouse_cursor
-                        .set_state_with_override(cursor_state, cursor_frame, client_tick);
+                    self.mouse_cursor.set_state_with_override(cursor_state, cursor_frame, client_tick);
 
                     if let Some(mouse_button) = input_report.mouse_click {
                         if is_interface_hovered {
@@ -3565,90 +3524,86 @@ impl Client {
                     input_report.mouse_position,
                 );
 
-                if self.show_interface {
-                    if let Some(notification) = self
-                        .client_state
-                        .follow(client_state().item_obtain_notification())
-                        .as_ref()
-                    {
-                        let interface_theme = self.client_state.follow(client_theme());
-                        let tooltip_theme = &interface_theme.tooltip;
-                        let scaling_factor = scaling.get_factor();
-                        let font_size = tooltip_theme.font_size;
-                        let text_color = tooltip_theme.foreground_color;
-                        let highlight_color = tooltip_theme.highlight_color;
-                        let border_color = tooltip_theme.shadow_color;
-                        let background_color = tooltip_theme.background_color;
-                        let text = format!("{} - {} obtained.", notification.metadata.name, notification.count);
-                        let text_size = self.font_loader.layout_text(
-                            &text,
-                            text_color,
-                            highlight_color,
-                            FontSize(font_size.0 * scaling_factor),
-                            1.0,
-                            None,
-                            None,
-                        );
+                if self.show_interface
+                    && let Some(notification) = self.client_state.follow(client_state().item_obtain_notification()).as_ref()
+                {
+                    let interface_theme = self.client_state.follow(client_theme());
+                    let tooltip_theme = &interface_theme.tooltip;
+                    let scaling_factor = scaling.get_factor();
+                    let font_size = tooltip_theme.font_size;
+                    let text_color = tooltip_theme.foreground_color;
+                    let highlight_color = tooltip_theme.highlight_color;
+                    let border_color = tooltip_theme.shadow_color;
+                    let background_color = tooltip_theme.background_color;
+                    let text = format!("{} - {} obtained.", notification.metadata.name, notification.count);
+                    let text_size = self.font_loader.layout_text(
+                        &text,
+                        text_color,
+                        highlight_color,
+                        FontSize(font_size.0 * scaling_factor),
+                        1.0,
+                        None,
+                        None,
+                    );
 
-                        let icon_size = 24.0 * scaling_factor;
-                        let padding_x = 10.0 * scaling_factor;
-                        let padding_y = 4.0 * scaling_factor;
-                        let gap = 6.0 * scaling_factor;
-                        let content_height = icon_size.max(text_size.y);
-                        let popup_height = content_height + padding_y * 2.0;
-                        let popup_width = padding_x * 2.0 + icon_size + gap + text_size.x;
-                        let popup_left = (screen_size.width - popup_width) / 2.0;
-                        let popup_top = 50.0 * scaling_factor;
-                        let border = tooltip_theme.border * scaling_factor;
+                    let icon_size = 24.0 * scaling_factor;
+                    let padding_x = 10.0 * scaling_factor;
+                    let padding_y = 4.0 * scaling_factor;
+                    let gap = 6.0 * scaling_factor;
+                    let content_height = icon_size.max(text_size.y);
+                    let popup_height = content_height + padding_y * 2.0;
+                    let popup_width = padding_x * 2.0 + icon_size + gap + text_size.x;
+                    let popup_left = (screen_size.width - popup_width) / 2.0;
+                    let popup_top = 50.0 * scaling_factor;
+                    let border = tooltip_theme.border * scaling_factor;
 
-                        self.top_interface_renderer.render_rectangle(
-                            ScreenPosition {
-                                left: popup_left - border,
-                                top: popup_top - border,
-                            },
-                            ScreenSize {
-                                width: popup_width + border * 2.0,
-                                height: popup_height + border * 2.0,
-                            },
-                            border_color,
-                        );
-                        self.top_interface_renderer.render_rectangle(
-                            ScreenPosition {
-                                left: popup_left,
-                                top: popup_top,
-                            },
-                            ScreenSize {
-                                width: popup_width,
-                                height: popup_height,
-                            },
-                            background_color,
-                        );
+                    self.top_interface_renderer.render_rectangle(
+                        ScreenPosition {
+                            left: popup_left - border,
+                            top: popup_top - border,
+                        },
+                        ScreenSize {
+                            width: popup_width + border * 2.0,
+                            height: popup_height + border * 2.0,
+                        },
+                        border_color,
+                    );
+                    self.top_interface_renderer.render_rectangle(
+                        ScreenPosition {
+                            left: popup_left,
+                            top: popup_top,
+                        },
+                        ScreenSize {
+                            width: popup_width,
+                            height: popup_height,
+                        },
+                        background_color,
+                    );
 
-                        if let Some(texture) = notification.metadata.texture.as_ref() {
-                            let icon_position = ScreenPosition {
-                                left: popup_left + padding_x,
-                                top: popup_top + (popup_height - icon_size) / 2.0,
-                            };
-                            self.top_interface_renderer.render_sprite(
-                                texture.clone(),
-                                icon_position,
-                                ScreenSize {
-                                    width: icon_size,
-                                    height: icon_size,
-                                },
-                                ScreenClip::unbound(),
-                                Color::WHITE,
-                                true,
-                            );
-                        }
-
-                        let text_position = ScreenPosition {
-                            left: popup_left + padding_x + icon_size + gap,
-                            top: popup_top + (popup_height - text_size.y) / 2.0,
+                    if let Some(texture) = notification.metadata.texture.as_ref() {
+                        let icon_position = ScreenPosition {
+                            left: popup_left + padding_x,
+                            top: popup_top + (popup_height - icon_size) / 2.0,
                         };
-                        self.top_interface_renderer
-                            .render_text(&text, text_position, text_color, font_size, AlignHorizontal::Left);
+                        self.top_interface_renderer.render_sprite(
+                            texture.clone(),
+                            icon_position,
+                            ScreenSize {
+                                width: icon_size,
+                                height: icon_size,
+                            },
+                            ScreenClip::unbound(),
+                            Color::WHITE,
+                            true,
+                        );
                     }
+
+                    let text_position = ScreenPosition {
+                        left: popup_left + padding_x + icon_size + gap,
+                        top: popup_top + (popup_height - text_size.y) / 2.0,
+                    };
+                    self.top_interface_renderer
+                        .render_text(&text, text_position, text_color, font_size, AlignHorizontal::Left);
                 }
 
                 drop(interface_frame);

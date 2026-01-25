@@ -110,7 +110,11 @@ impl AsyncLoader {
         item_entity_id: EntityId,
         entity_part_files: Vec<String>,
     ) -> Option<Arc<AnimationData>> {
-        self.request_animation_data_load_with_id(LoaderId::GroundItemAnimation(item_entity_id), EntityType::Npc, entity_part_files)
+        self.request_animation_data_load_with_id(
+            LoaderId::GroundItemAnimation(item_entity_id),
+            EntityType::Npc,
+            entity_part_files,
+        )
     }
 
     fn request_animation_data_load_with_id(
