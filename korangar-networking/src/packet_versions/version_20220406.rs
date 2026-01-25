@@ -259,6 +259,45 @@ where
         entity_id: packet.entity_id,
         reason: packet.reason,
     })?;
+    packet_handler.register(|packet: ItemEntryPacket| NetworkEvent::AddGroundItem {
+        item_entity_id: packet.item_entity_id,
+        item_id: packet.item_id,
+        is_identified: packet.is_identified != 0,
+        count: packet.count,
+        position: packet.position,
+        sub_x: packet.sub_x,
+        sub_y: packet.sub_y,
+    })?;
+    packet_handler.register(|packet: ItemFallEntryPacket| NetworkEvent::AddGroundItem {
+        item_entity_id: packet.item_entity_id,
+        item_id: packet.item_id,
+        is_identified: packet.is_identified != 0,
+        count: packet.count,
+        position: packet.position,
+        sub_x: packet.sub_x,
+        sub_y: packet.sub_y,
+    })?;
+    packet_handler.register(|packet: ItemFallEntry2Packet| NetworkEvent::AddGroundItem {
+        item_entity_id: packet.item_entity_id,
+        item_id: packet.item_id,
+        is_identified: packet.is_identified != 0,
+        count: packet.count,
+        position: packet.position,
+        sub_x: packet.sub_x,
+        sub_y: packet.sub_y,
+    })?;
+    packet_handler.register(|packet: ItemFallEntry3Packet| NetworkEvent::AddGroundItem {
+        item_entity_id: packet.item_entity_id,
+        item_id: packet.item_id,
+        is_identified: packet.is_identified != 0,
+        count: packet.count,
+        position: packet.position,
+        sub_x: packet.sub_x,
+        sub_y: packet.sub_y,
+    })?;
+    packet_handler.register(|packet: ItemDisappearPacket| NetworkEvent::RemoveGroundItem {
+        item_entity_id: packet.item_entity_id,
+    })?;
     packet_handler.register(|packet: UpdateStatPacket| {
         let UpdateStatPacket { stat_type } = packet;
         NetworkEvent::UpdateStat { stat_type }
@@ -515,7 +554,10 @@ where
         } = packet;
 
         if result != ItemPickupResult::Success {
-            todo!();
+            return vec![NetworkEvent::ChatMessage {
+                text: "Failed to pick up item.".to_string(),
+                color: MessageColor::Error,
+            }];
         }
 
         // TODO: Not sure where to store these, since the *InventoryItem packets are not
@@ -560,7 +602,17 @@ where
             details,
         };
 
-        NetworkEvent::IventoryItemAdded { item }
+        let is_identified = is_identified != 0;
+        let display_count = count.max(1);
+
+        vec![
+            NetworkEvent::IventoryItemAdded { item },
+            NetworkEvent::ItemObtained {
+                item_id,
+                count: display_count,
+                is_identified,
+            },
+        ]
     })?;
     packet_handler.register(|packet: RemoveItemFromInventoryPacket| NetworkEvent::InventoryItemRemoved {
         reason: packet.remove_reason,
@@ -622,6 +674,10 @@ where
             attack_duration: packet.attack_duration,
             is_critical: true,
         }),
+        DamageType::PickUpItem => Some(NetworkEvent::EntityPickUpItem {
+            entity_id: packet.source_entity_id,
+            item_entity_id: packet.destination_entity_id,
+        }),
         DamageType::StandUp => Some(NetworkEvent::PlayerStandUp {
             entity_id: packet.destination_entity_id,
         }),
@@ -641,6 +697,10 @@ where
             damage_amount: (packet.damage_amount > 0).then_some(packet.damage_amount as usize),
             attack_duration: packet.attack_duration,
             is_critical: true,
+        }),
+        DamageType::PickUpItem => Some(NetworkEvent::EntityPickUpItem {
+            entity_id: packet.source_entity_id,
+            item_entity_id: packet.destination_entity_id,
         }),
         DamageType::StandUp => Some(NetworkEvent::PlayerStandUp {
             entity_id: packet.destination_entity_id,

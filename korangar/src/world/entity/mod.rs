@@ -39,6 +39,8 @@ const MALE_HAIR_LOOKUP: &[usize] = &[2, 2, 1, 7, 5, 4, 3, 6, 8, 9, 10, 12, 11];
 const FEMALE_HAIR_LOOKUP: &[usize] = &[2, 2, 4, 7, 1, 5, 3, 6, 12, 10, 9, 11, 8];
 const SOUND_COOLDOWN_DURATION: u32 = 200;
 const SPATIAL_SOUND_RANGE: f32 = 250.0;
+// Push corpse sprites behind standing entities.
+const DEAD_ENTITY_EXTRA_DEPTH_OFFSET: f32 = 0.2;
 
 #[derive(Clone)]
 pub enum ResourceState<T> {
@@ -143,7 +145,7 @@ impl SoundState {
     }
 }
 
-const FADE_DURATION: u32 = 500;
+const FADE_DURATION_MS: u32 = 500;
 
 #[derive(Copy, Clone, Debug, PartialOrd, PartialEq)]
 pub enum FadeDirection {
@@ -154,21 +156,35 @@ pub enum FadeDirection {
 #[derive(Copy, Clone, Debug)]
 pub enum FadeState {
     Opaque,
-    Fading { direction: FadeDirection, start_time: ClientTick },
+    Fading {
+        direction: FadeDirection,
+        start_time: ClientTick,
+        duration_ms: u32,
+    },
 }
 
 impl FadeState {
     pub fn calculate_alpha(&self, client_tick: ClientTick) -> f32 {
         match self {
             FadeState::Opaque => 1.0,
-            FadeState::Fading { direction, start_time } => match *direction {
+            FadeState::Fading {
+                direction,
+                start_time,
+                duration_ms,
+            } => match *direction {
                 FadeDirection::In => {
+                    if *duration_ms == 0 {
+                        return 1.0;
+                    }
                     let elapsed = client_tick.0.wrapping_sub(start_time.0);
-                    (elapsed as f32 / FADE_DURATION as f32).min(1.0)
+                    (elapsed as f32 / *duration_ms as f32).min(1.0)
                 }
                 FadeDirection::Out => {
+                    if *duration_ms == 0 {
+                        return 0.0;
+                    }
                     let elapsed = client_tick.0.wrapping_sub(start_time.0);
-                    1.0 - (elapsed as f32 / FADE_DURATION as f32).min(1.0)
+                    1.0 - (elapsed as f32 / *duration_ms as f32).min(1.0)
                 }
             },
         }
@@ -177,9 +193,16 @@ impl FadeState {
     pub fn is_complete(&self, client_tick: ClientTick) -> bool {
         match self {
             FadeState::Opaque => true,
-            FadeState::Fading { start_time, .. } => {
+            FadeState::Fading {
+                start_time,
+                duration_ms,
+                ..
+            } => {
+                if *duration_ms == 0 {
+                    return true;
+                }
                 let elapsed = client_tick.0.wrapping_sub(start_time.0);
-                elapsed >= FADE_DURATION
+                elapsed >= *duration_ms
             }
         }
     }
@@ -188,13 +211,21 @@ impl FadeState {
     /// This allows smooth transitions between fade states by preserving the
     /// current alpha.
     pub fn from_alpha(alpha: f32, direction: FadeDirection, client_tick: ClientTick) -> Self {
+        Self::from_alpha_with_duration(alpha, direction, client_tick, FADE_DURATION_MS)
+    }
+
+    pub fn from_alpha_with_duration(alpha: f32, direction: FadeDirection, client_tick: ClientTick, duration_ms: u32) -> Self {
         let alpha = alpha.clamp(0.0, 1.0);
         let elapsed = match direction {
-            FadeDirection::In => (alpha * FADE_DURATION as f32) as u32,
-            FadeDirection::Out => ((1.0 - alpha) * FADE_DURATION as f32) as u32,
+            FadeDirection::In => (alpha * duration_ms as f32) as u32,
+            FadeDirection::Out => ((1.0 - alpha) * duration_ms as f32) as u32,
         };
         let start_time = ClientTick(client_tick.0.wrapping_sub(elapsed));
-        FadeState::Fading { direction, start_time }
+        FadeState::Fading {
+            direction,
+            start_time,
+            duration_ms,
+        }
     }
 }
 
@@ -454,12 +485,21 @@ impl Common {
             fade_state: FadeState::Fading {
                 direction: FadeDirection::In,
                 start_time: client_tick,
+                duration_ms: FADE_DURATION_MS,
             },
         }
     }
 
     pub fn get_entity_part_files(&self, library: &Library) -> Vec<String> {
         get_entity_part_files(library, self.entity_type, self.job_id, self.sex, None)
+    }
+
+    pub fn is_dead(&self) -> bool {
+        self.animation_state.is_dead()
+    }
+
+    pub fn dead_elapsed(&self) -> u32 {
+        self.animation_state.elapsed()
     }
 
     pub fn update(&mut self, audio_engine: &AudioEngine<GameFileLoader>, map: &Map, camera: &dyn Camera, client_tick: ClientTick) {
@@ -474,7 +514,9 @@ impl Common {
         }
 
         if let Some(animation_data) = self.animation_data.as_ref() {
-            if animation_data.is_animation_over(&self.animation_state) && self.animation_state.is_attack() {
+            if animation_data.is_animation_over(&self.animation_state)
+                && (self.animation_state.is_attack() || self.animation_state.is_pickup())
+            {
                 self.animation_state.idle(self.entity_type, client_tick);
             }
 
@@ -878,7 +920,12 @@ impl Common {
     pub fn render(&self, instructions: &mut Vec<EntityInstruction>, camera: &dyn Camera, add_to_picker: bool, client_tick: ClientTick) {
         if let Some(animation_data) = self.animation_data.as_ref() {
             let fade_alpha = self.fade_state.calculate_alpha(client_tick);
-            animation_data.render(
+            let extra_depth_offset = if self.animation_state.is_dead() {
+                DEAD_ENTITY_EXTRA_DEPTH_OFFSET
+            } else {
+                0.0
+            };
+            animation_data.render_with_depth_offset(
                 instructions,
                 camera,
                 add_to_picker,
@@ -887,6 +934,7 @@ impl Common {
                 &self.animation_state,
                 self.direction,
                 fade_alpha,
+                extra_depth_offset,
             );
         }
     }
@@ -1232,6 +1280,18 @@ impl Entity {
         self.get_common().entity_type
     }
 
+    pub fn is_dead(&self) -> bool {
+        self.get_common().is_dead()
+    }
+
+    pub fn dead_elapsed(&self) -> u32 {
+        self.get_common().dead_elapsed()
+    }
+
+    pub fn should_despawn_dead(&self, ttl_ms: u32) -> bool {
+        self.is_dead() && self.dead_elapsed() >= ttl_ms
+    }
+
     pub fn get_fade_state(&self) -> FadeState {
         self.get_common().fade_state
     }
@@ -1309,6 +1369,11 @@ impl Entity {
     pub fn set_idle(&mut self, client_tick: ClientTick) {
         let entity_type = self.get_entity_type();
         self.get_common_mut().animation_state.idle(entity_type, client_tick);
+    }
+
+    pub fn set_pickup(&mut self, client_tick: ClientTick) {
+        let entity_type = self.get_entity_type();
+        self.get_common_mut().animation_state.pickup(entity_type, client_tick);
     }
 
     pub fn rotate_towards(&mut self, target_position: TilePosition) {

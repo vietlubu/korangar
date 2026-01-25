@@ -8,7 +8,7 @@ use encoding_rs::EUC_KR;
 
 pub use self::item_info::ItemInfo;
 pub use self::item_name::{ItemName, ItemNameKey};
-pub use self::item_resource::{ItemResource, ItemResourceKey};
+pub use self::item_resource::{ITEM_SPRITE_PREFIX, ItemResource, ItemResourceKey};
 pub use self::job_identity::JobIdentity;
 pub use self::map_sky_data::MapSkyData;
 use crate::loaders::GameFileLoader;

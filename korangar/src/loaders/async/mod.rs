@@ -27,6 +27,7 @@ pub enum ItemLocation {
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub enum LoaderId {
     AnimationData(EntityId),
+    GroundItemAnimation(EntityId),
     ItemSprite(ItemId),
     Map(String),
 }
@@ -101,6 +102,23 @@ impl AsyncLoader {
         entity_type: EntityType,
         entity_part_files: Vec<String>,
     ) -> Option<Arc<AnimationData>> {
+        self.request_animation_data_load_with_id(LoaderId::AnimationData(entity_id), entity_type, entity_part_files)
+    }
+
+    pub fn request_ground_item_animation_data_load(
+        &self,
+        item_entity_id: EntityId,
+        entity_part_files: Vec<String>,
+    ) -> Option<Arc<AnimationData>> {
+        self.request_animation_data_load_with_id(LoaderId::GroundItemAnimation(item_entity_id), EntityType::Npc, entity_part_files)
+    }
+
+    fn request_animation_data_load_with_id(
+        &self,
+        loader_id: LoaderId,
+        entity_type: EntityType,
+        entity_part_files: Vec<String>,
+    ) -> Option<Arc<AnimationData>> {
         match self.animation_loader.get(&entity_part_files) {
             Some(animation_data) => Some(animation_data),
             None => {
@@ -108,7 +126,7 @@ impl AsyncLoader {
                 let action_loader = self.action_loader.clone();
                 let animation_loader = self.animation_loader.clone();
 
-                self.request_load(LoaderId::AnimationData(entity_id), move || {
+                self.request_load(loader_id, move || {
                     #[cfg(feature = "debug")]
                     let _load_measurement = Profiler::start_measurement("animation data load");
 

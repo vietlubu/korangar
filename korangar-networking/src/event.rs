@@ -88,6 +88,20 @@ pub enum NetworkEvent {
         entity_id: EntityId,
         reason: DisappearanceReason,
     },
+    /// Add an item to the ground.
+    AddGroundItem {
+        item_entity_id: EntityId,
+        item_id: ItemId,
+        is_identified: bool,
+        count: u16,
+        position: TilePosition,
+        sub_x: u8,
+        sub_y: u8,
+    },
+    /// Remove an item from the ground.
+    RemoveGroundItem {
+        item_entity_id: EntityId,
+    },
     /// The player is pathing to a new position.
     PlayerMove {
         origin: WorldPosition,
@@ -137,6 +151,10 @@ pub enum NetworkEvent {
         attack_duration: u32,
         is_critical: bool,
     },
+    EntityPickUpItem {
+        entity_id: EntityId,
+        item_entity_id: EntityId,
+    },
     HealEffect {
         entity_id: EntityId,
         heal_amount: usize,
@@ -169,6 +187,11 @@ pub enum NetworkEvent {
     },
     IventoryItemAdded {
         item: InventoryItem<NoMetadata>,
+    },
+    ItemObtained {
+        item_id: ItemId,
+        count: u16,
+        is_identified: bool,
     },
     SkillTree {
         skill_information: Vec<SkillInformation>,

@@ -38,8 +38,16 @@ pub struct MouseCursor {
     sprite: Arc<Sprite>,
     actions: Arc<Actions>,
     cursor_state: MouseCursorState,
+    frame_override: Option<usize>,
+    override_state: Option<CursorOverride>,
     animation_state: SpriteAnimationState,
     shown: bool,
+}
+
+struct CursorOverride {
+    state: MouseCursorState,
+    frame_override: Option<usize>,
+    expires_at: ClientTick,
 }
 
 impl MouseCursor {
@@ -53,6 +61,8 @@ impl MouseCursor {
             sprite,
             actions,
             cursor_state: MouseCursorState::Default,
+            frame_override: None,
+            override_state: None,
             animation_state,
             shown,
         }
@@ -70,12 +80,49 @@ impl MouseCursor {
         self.animation_state.update(client_tick);
     }
 
-    pub fn set_state(&mut self, state: MouseCursorState, client_tick: ClientTick) {
-        if self.cursor_state != state {
+    pub fn set_temporary_override(
+        &mut self,
+        state: MouseCursorState,
+        frame_override: Option<usize>,
+        duration_ms: u32,
+        client_tick: ClientTick,
+    ) {
+        self.override_state = Some(CursorOverride {
+            state,
+            frame_override,
+            expires_at: ClientTick(client_tick.0.wrapping_add(duration_ms)),
+        });
+        self.set_state(state, frame_override, client_tick);
+    }
+
+    pub fn set_state(&mut self, state: MouseCursorState, frame_override: Option<usize>, client_tick: ClientTick) {
+        if self.cursor_state != state || self.frame_override != frame_override {
             self.cursor_state = state;
+            self.frame_override = frame_override;
             self.animation_state.action_base_offset = usize::from(self.cursor_state);
             self.animation_state.start_time = client_tick;
         }
+    }
+
+    pub fn set_state_with_override(
+        &mut self,
+        state: MouseCursorState,
+        frame_override: Option<usize>,
+        client_tick: ClientTick,
+    ) {
+        let mut state = state;
+        let mut frame_override = frame_override;
+
+        if let Some(override_state) = &self.override_state {
+            if client_tick.0 < override_state.expires_at.0 {
+                state = override_state.state;
+                frame_override = override_state.frame_override;
+            } else {
+                self.override_state = None;
+            }
+        }
+
+        self.set_state(state, frame_override, client_tick);
     }
 
     #[cfg_attr(feature = "debug", korangar_debug::profile("render mouse cursor"))]
@@ -131,15 +178,29 @@ impl MouseCursor {
             _ => 7,
         };
 
-        self.actions.render_sprite(
-            renderer,
-            &self.sprite,
-            &self.animation_state,
-            mouse_position,
-            direction,
-            ScreenClip::unbound(),
-            color,
-            scaling,
-        );
+        let action_index = self.animation_state.action_base_offset * 8 + direction;
+        if let Some(frame_index) = self.frame_override {
+            self.actions.render_sprite_frame(
+                renderer,
+                &self.sprite,
+                action_index,
+                frame_index,
+                mouse_position,
+                ScreenClip::unbound(),
+                color,
+                scaling,
+            );
+        } else {
+            self.actions.render_sprite(
+                renderer,
+                &self.sprite,
+                &self.animation_state,
+                mouse_position,
+                direction,
+                ScreenClip::unbound(),
+                color,
+                scaling,
+            );
+        }
     }
 }
