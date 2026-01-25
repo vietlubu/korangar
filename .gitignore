@@ -5,10 +5,8 @@ target/
 korangar/archive/data/font/*
 korangar/client/
 korangar/cache/
-korangar/data.grf
-korangar/rdata.grf
+korangar/*.grf
 korangar/lua_files/
-korangar/lua_files.grf
 korangar/[Bb][Gg][Mm]/
 korangar/*.7z
 
