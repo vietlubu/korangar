@@ -22,7 +22,7 @@ use korangar_networking::{MessageColor, SellItem, ShopItem};
 use localization::Localization;
 #[cfg(feature = "debug")]
 use ragnarok_formats::map::{EffectSource, LightSource, MapData, SoundSource};
-use ragnarok_packets::{CharacterId, CharacterServerInformation, EntityId, Friend};
+use ragnarok_packets::{CharacterId, CharacterServerInformation, ClientTick, EntityId, Friend, ItemId};
 #[cfg(feature = "debug")]
 use rust_state::{ManuallyAssertExt, VecIndexExt};
 use rust_state::{Path, RustState, Selector};
@@ -51,7 +51,7 @@ use crate::settings::{
 use crate::state::theme::WorldTheme;
 #[cfg(feature = "debug")]
 use crate::world::Object;
-use crate::world::{Entity, Player, ResourceMetadata};
+use crate::world::{Entity, GroundItem, Player, ResourceMetadata};
 use crate::{AudioSettings, GraphicsSettings};
 
 /// A message in the in-game chat.
@@ -70,6 +70,14 @@ impl ChatMessage {
     pub fn new(text: String, color: MessageColor) -> Self {
         Self { text, color }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct ItemObtainNotification {
+    pub item_id: ItemId,
+    pub metadata: ResourceMetadata,
+    pub count: u16,
+    pub received_at: ClientTick,
 }
 
 /// Internal state of the client. Everything that can be viewed or modified via
@@ -121,9 +129,14 @@ pub struct ClientState {
     entities: Vec<Entity>,
     /// All dead entities on the map.
     dead_entities: Vec<Entity>,
+    /// All ground items on the map.
+    ground_items: Vec<GroundItem>,
 
     /// List of all received chat messages.
     chat_messages: Vec<ChatMessage>,
+    /// Most recent item obtain notification.
+    #[hidden_element]
+    item_obtain_notification: Option<ItemObtainNotification>,
     /// List of all friends.
     friend_list: Vec<Friend>,
     /// List of items offered in the shop.
@@ -171,6 +184,8 @@ pub struct ClientState {
     /// Buffered attack entity. Like when attacking a target that is out of
     /// range.
     buffered_attack_entity: Option<EntityId>,
+    /// Buffered ground item pickup entity.
+    buffered_pickup_item: Option<EntityId>,
 
     /// Map data that is viewed in the inspector. Once added to this vector they
     /// are never removed so we can ensure the user interface remains valid.
@@ -272,6 +287,7 @@ impl ClientState {
                 env!("CARGO_PKG_VERSION")
             );
             let chat_messages = vec![ChatMessage::new(welcome_string, MessageColor::Server)];
+            let item_obtain_notification = None;
 
             let chat_window = ChatWindowState::default();
         });
@@ -312,6 +328,7 @@ impl ClientState {
         });
 
         let buffered_attack_entity = None;
+        let buffered_pickup_item = None;
 
         #[cfg(feature = "debug")]
         let debug_timer = korangar_debug::logging::Timer::new("creating debug resources");
@@ -360,7 +377,9 @@ impl ClientState {
             dialog_window,
             entities: Vec::new(),
             dead_entities: Vec::new(),
+            ground_items: Vec::new(),
             chat_messages,
+            item_obtain_notification,
             friend_list,
             shop_items,
             buy_cart,
@@ -377,6 +396,7 @@ impl ClientState {
             create_character_name,
             window_size,
             buffered_attack_entity,
+            buffered_pickup_item,
             #[cfg(feature = "debug")]
             inspecting_maps,
             #[cfg(feature = "debug")]

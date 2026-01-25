@@ -14,6 +14,7 @@ use crate::world::{ActionEvent, Actions, Camera, EntityType};
 
 const TILE_SIZE: f32 = 10.0;
 const SPRITE_SCALE: f32 = 1.4;
+const PICKUP_ANIMATION_FACTOR: f32 = 25.0;
 
 #[allow(dead_code)]
 #[derive(Copy, Clone, Default, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
@@ -113,6 +114,15 @@ impl AnimationState {
         self.looping = false;
     }
 
+    pub fn pickup(&mut self, entity_type: EntityType, client_tick: ClientTick) {
+        self.action_type = AnimationActionType::Pickup;
+        self.action_base_offset = self.action_type.action_base_offset(entity_type);
+        self.start_time = client_tick;
+        self.duration = None;
+        self.factor = Some(PICKUP_ANIMATION_FACTOR);
+        self.looping = false;
+    }
+
     pub fn walk(&mut self, entity_type: EntityType, movement_speed: usize, client_tick: ClientTick) {
         self.action_type = AnimationActionType::Walk;
         self.action_base_offset = self.action_type.action_base_offset(entity_type);
@@ -138,8 +148,20 @@ impl AnimationState {
         )
     }
 
+    pub fn is_pickup(&self) -> bool {
+        self.action_type == AnimationActionType::Pickup
+    }
+
     pub fn is_walking(&self) -> bool {
         self.action_type == AnimationActionType::Walk
+    }
+
+    pub fn is_dead(&self) -> bool {
+        self.action_type == AnimationActionType::Die
+    }
+
+    pub fn elapsed(&self) -> u32 {
+        self.time
     }
 
     pub fn update(&mut self, client_tick: ClientTick) {
@@ -297,6 +319,31 @@ impl AnimationData {
         direction: Direction,
         fade_alpha: f32,
     ) {
+        self.render_with_depth_offset(
+            instructions,
+            camera,
+            add_to_picker,
+            entity_id,
+            entity_position,
+            animation_state,
+            direction,
+            fade_alpha,
+            0.0,
+        );
+    }
+
+    pub fn render_with_depth_offset(
+        &self,
+        instructions: &mut Vec<EntityInstruction>,
+        camera: &dyn Camera,
+        add_to_picker: bool,
+        entity_id: EntityId,
+        entity_position: Point3<f32>,
+        animation_state: &AnimationState,
+        direction: Direction,
+        fade_alpha: f32,
+        extra_depth_offset: f32,
+    ) {
         let frame = self.get_frame(animation_state, camera, direction);
         let world_matrix = self.calculate_world_matrix(camera, frame, entity_position);
 
@@ -321,7 +368,7 @@ impl AnimationData {
                 texture_size,
                 frame_size,
                 depth_offset,
-                extra_depth_offset: 0.005 * index as f32,
+                extra_depth_offset: extra_depth_offset + 0.005 * index as f32,
                 curvature,
                 color,
                 mirror: frame_part.mirror,

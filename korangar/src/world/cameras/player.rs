@@ -12,7 +12,9 @@ const VERTICAL_FOV: Deg<f32> = Deg(15.5);
 const THRESHOLD: f32 = 0.01;
 const LOOK_UP: Vector3<f32> = Vector3::new(0.0, 1.0, 0.0);
 
+#[cfg(not(target_os = "macos"))]
 const ROTATION_SPEED_THRESHOLD: f32 = 0.02;
+#[cfg(not(target_os = "macos"))]
 const ZOOM_SPEED_THRESHOLD: f32 = 20.0;
 
 pub struct PlayerCamera {
@@ -65,6 +67,7 @@ impl PlayerCamera {
         self.view_angle.set_desired(DEFAULT_ANGLE);
     }
 
+    #[cfg(not(target_os = "macos"))]
     pub fn is_rotating_or_zooming_fast(&self) -> bool {
         let rotation_velocity = self.view_angle.get_velocity();
         let zoom_velocity = self.camera_distance.get_velocity();

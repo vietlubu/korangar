@@ -1537,6 +1537,13 @@ pub struct RequestActionPacket {
 
 #[derive(Debug, Clone, Packet, ClientPacket, MapServer)]
 #[cfg_attr(feature = "interface", derive(rust_state::RustState, korangar_interface::element::StateElement))]
+#[header(0x0362)]
+pub struct ItemPickupRequestPacket {
+    pub item_entity_id: EntityId,
+}
+
+#[derive(Debug, Clone, Packet, ClientPacket, MapServer)]
+#[cfg_attr(feature = "interface", derive(rust_state::RustState, korangar_interface::element::StateElement))]
 #[header(0x00F3)]
 #[variable_length]
 pub struct GlobalMessagePacket {
@@ -3376,6 +3383,69 @@ pub struct StateChangePacket {
     pub health_state: u16,
     pub effect_state: u32,
     pub is_pk_mode_on: u8,
+}
+
+#[derive(Debug, Clone, Packet, ServerPacket, MapServer)]
+#[cfg_attr(feature = "interface", derive(rust_state::RustState, korangar_interface::element::StateElement))]
+#[header(0x009D)]
+pub struct ItemEntryPacket {
+    pub item_entity_id: EntityId,
+    pub item_id: ItemId,
+    pub is_identified: u8,
+    pub position: TilePosition,
+    pub count: u16,
+    pub sub_x: u8,
+    pub sub_y: u8,
+}
+
+#[derive(Debug, Clone, Packet, ServerPacket, MapServer)]
+#[cfg_attr(feature = "interface", derive(rust_state::RustState, korangar_interface::element::StateElement))]
+#[header(0x009E)]
+pub struct ItemFallEntryPacket {
+    pub item_entity_id: EntityId,
+    pub item_id: ItemId,
+    pub is_identified: u8,
+    pub position: TilePosition,
+    pub sub_x: u8,
+    pub sub_y: u8,
+    pub count: u16,
+}
+
+#[derive(Debug, Clone, Packet, ServerPacket, MapServer)]
+#[cfg_attr(feature = "interface", derive(rust_state::RustState, korangar_interface::element::StateElement))]
+#[header(0x084B)]
+pub struct ItemFallEntry2Packet {
+    pub item_entity_id: EntityId,
+    pub item_id: ItemId,
+    pub item_type: u16,
+    pub is_identified: u8,
+    pub position: TilePosition,
+    pub sub_x: u8,
+    pub sub_y: u8,
+    pub count: u16,
+}
+
+#[derive(Debug, Clone, Packet, ServerPacket, MapServer)]
+#[cfg_attr(feature = "interface", derive(rust_state::RustState, korangar_interface::element::StateElement))]
+#[header(0x0ADD)]
+pub struct ItemFallEntry3Packet {
+    pub item_entity_id: EntityId,
+    pub item_id: ItemId,
+    pub item_type: u16,
+    pub is_identified: u8,
+    pub position: TilePosition,
+    pub sub_x: u8,
+    pub sub_y: u8,
+    pub count: u16,
+    pub show_drop_effect: u8,
+    pub drop_effect_mode: u16,
+}
+
+#[derive(Debug, Clone, Packet, ServerPacket, MapServer)]
+#[cfg_attr(feature = "interface", derive(rust_state::RustState, korangar_interface::element::StateElement))]
+#[header(0x00A1)]
+pub struct ItemDisappearPacket {
+    pub item_entity_id: EntityId,
 }
 
 #[derive(Debug, Clone, ByteConvertable, PartialEq, Eq)]

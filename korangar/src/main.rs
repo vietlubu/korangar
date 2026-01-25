@@ -71,8 +71,8 @@ use networking::{PacketHistory, PacketHistoryCallback};
 #[cfg(not(feature = "debug"))]
 use ragnarok_packets::handler::NoPacketCallback;
 use ragnarok_packets::{
-    BuyShopItemsResult, CharacterServerInformation, Direction, DisappearanceReason, HotbarSlot, SellItemsResult, SkillId, SkillType,
-    TilePosition, UnitId, WorldPosition,
+    AttackRange, BuyShopItemsResult, CharacterServerInformation, ClientTick, Direction, DisappearanceReason, EntityId, HotbarSlot, ItemId,
+    SellItemsResult, SkillId, SkillType, TilePosition, UnitId, WorldPosition,
 };
 use renderer::InterfaceRenderer;
 use rust_state::{Context, ManuallyAssertExt};
@@ -83,7 +83,17 @@ use settings::{
 };
 use state::localization::Localization;
 use state::theme::{CursorThemePathExt, IndicatorThemePathExt, InterfaceThemePathExt, WorldThemePathExt};
-use state::{ChatMessage, ClientState, ClientStatePathExt, ClientStateRootExt, client_state, this_entity, this_player};
+use state::{
+    ChatMessage,
+    ClientState,
+    ClientStatePathExt,
+    ClientStateRootExt,
+    ItemObtainNotification,
+    client_state,
+    client_theme,
+    this_entity,
+    this_player,
+};
 #[cfg(feature = "debug")]
 use wgpu::Device;
 use wgpu::util::initialize_adapter_from_env_or_default;
@@ -99,6 +109,8 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::PhysicalKey;
 use winit::window::{Icon, Window, WindowId};
 
+use korangar_interface::application::Clip;
+
 use crate::graphics::*;
 use crate::input::{InputEvent, InputSystem};
 use crate::interface::cursor::{MouseCursor, MouseCursorState};
@@ -107,7 +119,7 @@ use crate::interface::windows::*;
 use crate::loaders::*;
 #[cfg(feature = "debug")]
 use crate::renderer::DebugMarkerRenderer;
-use crate::renderer::{AlignHorizontal, EffectRenderer, GameInterfaceRenderer};
+use crate::renderer::{AlignHorizontal, EffectRenderer, GameInterfaceRenderer, SpriteRenderer};
 use crate::settings::{
     GameSettingsPathExt, GraphicsSettings, IN_GAME_THEMES_PATH, LightingMode, MENU_THEMES_PATH, ServiceSettingsPathExt, WORLD_THEMES_PATH,
 };
@@ -124,6 +136,12 @@ const DEFAULT_MAP: &str = "geffen";
 const START_CAMERA_FOCUS_POINT: Point3<f32> = Point3::new(600.0, 0.0, 240.0);
 const DEFAULT_BACKGROUND_MUSIC: Option<&str> = Some("bgm\\01.mp3");
 const MAIN_MENU_CLICK_SOUND_EFFECT: &str = "버튼소리.wav";
+const DEAD_ENTITY_TTL_MS: u32 = 3000;
+const PICKUP_CURSOR_HOVER_FRAME: usize = 0;
+const PICKUP_CURSOR_CLICK_FRAME: usize = 2;
+const PICKUP_CURSOR_CLICK_DURATION_MS: u32 = 150;
+const ITEM_PICKUP_RANGE: AttackRange = AttackRange(1);
+const ITEM_OBTAIN_POPUP_TTL_MS: u32 = 5000;
 // TODO: The number of point lights that can cast shadows should be configurable
 // through the graphics settings. For now I just chose an arbitrary smaller
 // number that should be playable on most devices.
@@ -341,6 +359,16 @@ fn initialize_shutdown_signal() {
     .expect("Error setting Ctrl-C handler");
 }
 
+struct PendingGroundItem {
+    item_entity_id: EntityId,
+    item_id: ItemId,
+    is_identified: bool,
+    count: u16,
+    position: TilePosition,
+    sub_x: u8,
+    sub_y: u8,
+}
+
 struct Client {
     game_file_loader: Arc<GameFileLoader>,
     action_loader: Arc<ActionLoader>,
@@ -440,11 +468,46 @@ struct Client {
     device: Device,
     window: Option<Arc<Window>>,
 
+    pending_ground_items: Vec<PendingGroundItem>,
     map: Option<Box<Map>>,
     client_state: Context<ClientState>,
 }
 
 impl Client {
+    fn spawn_ground_item(
+        map: &Map,
+        pending: PendingGroundItem,
+        client_tick: ClientTick,
+        library: &Library,
+        async_loader: &AsyncLoader,
+        ground_items: &mut Vec<GroundItem>,
+    ) {
+        let PendingGroundItem {
+            item_entity_id,
+            item_id,
+            is_identified,
+            count,
+            position,
+            sub_x,
+            sub_y,
+        } = pending;
+
+        if let Some(mut item) =
+            GroundItem::new(map, item_id, item_entity_id, is_identified, count, position, sub_x, sub_y, client_tick)
+        {
+            let entity_part_files = item.get_entity_part_files(library);
+
+            if let Some(animation_data) =
+                async_loader.request_ground_item_animation_data_load(item_entity_id, entity_part_files)
+            {
+                item.set_animation_data(animation_data);
+            }
+
+            ground_items.retain(|existing| existing.get_entity_id() != item_entity_id);
+            ground_items.push(item);
+        }
+    }
+
     fn init(sync_cache: bool) -> Option<Self> {
         time_phase!("load graphics settings", {
             let picker_value = Arc::new(AtomicU64::new(0));
@@ -840,6 +903,7 @@ impl Client {
             device,
             window: None,
 
+            pending_ground_items: Vec::new(),
             map: Some(map),
             client_state,
         })
@@ -942,7 +1006,8 @@ impl Client {
         #[cfg(feature = "debug")]
         let network_event_measurement = Profiler::start_measurement("process network events");
 
-        for event in self.network_event_buffer.drain() {
+        let network_events: Vec<NetworkEvent> = self.network_event_buffer.drain().collect();
+        for event in network_events {
             match event {
                 NetworkEvent::LoginServerConnected {
                     character_servers,
@@ -1056,6 +1121,9 @@ impl Client {
 
                     self.client_state.follow_mut(client_state().entities()).clear();
                     self.client_state.follow_mut(client_state().dead_entities()).clear();
+                    self.client_state.follow_mut(client_state().ground_items()).clear();
+                    *self.client_state.follow_mut(client_state().item_obtain_notification()) = None;
+                    *self.client_state.follow_mut(client_state().buffered_pickup_item()) = None;
 
                     self.audio_engine.play_background_music_track(None);
 
@@ -1276,6 +1344,13 @@ impl Client {
                                 let mut entity = entity.clone();
                                 entity.set_dead(client_tick);
                                 entity.stop_movement();
+                                let current_alpha = entity.get_fade_state().calculate_alpha(client_tick);
+                                entity.set_fade_state(FadeState::from_alpha_with_duration(
+                                    current_alpha,
+                                    FadeDirection::Out,
+                                    client_tick,
+                                    DEAD_ENTITY_TTL_MS,
+                                ));
 
                                 // Remove the entity from the list of alive entities.
                                 self.client_state
@@ -1312,6 +1387,54 @@ impl Client {
                     let buffered_attack_entity = self.client_state.follow_mut(client_state().buffered_attack_entity());
                     if buffered_attack_entity.is_some_and(|buffered_entity_id| buffered_entity_id == entity_id) {
                         *buffered_attack_entity = None;
+                    }
+                }
+                NetworkEvent::AddGroundItem {
+                    item_entity_id,
+                    item_id,
+                    is_identified,
+                    count,
+                    position,
+                    sub_x,
+                    sub_y,
+                } => {
+                    self.pending_ground_items
+                        .retain(|existing| existing.item_entity_id != item_entity_id);
+
+                    let pending = PendingGroundItem {
+                        item_entity_id,
+                        item_id,
+                        is_identified,
+                        count,
+                        position,
+                        sub_x,
+                        sub_y,
+                    };
+
+                    if let Some(map) = self.map.as_ref() {
+                        let ground_items = self.client_state.follow_mut(client_state().ground_items());
+                        Self::spawn_ground_item(
+                            map,
+                            pending,
+                            client_tick,
+                            &self.library,
+                            &self.async_loader,
+                            ground_items,
+                        );
+                    } else {
+                        self.pending_ground_items.push(pending);
+                    }
+                }
+                NetworkEvent::RemoveGroundItem { item_entity_id } => {
+                    self.client_state
+                        .follow_mut(client_state().ground_items())
+                        .retain(|item| item.get_entity_id() != item_entity_id);
+                    self.pending_ground_items
+                        .retain(|pending| pending.item_entity_id != item_entity_id);
+
+                    let buffered_pickup_item = self.client_state.follow_mut(client_state().buffered_pickup_item());
+                    if buffered_pickup_item.is_some_and(|buffered_id| buffered_id == item_entity_id) {
+                        *buffered_pickup_item = None;
                     }
                 }
                 NetworkEvent::EntityMove {
@@ -1366,6 +1489,10 @@ impl Client {
                     // Only the player must stay alive between map changes.
                     self.client_state.follow_mut(client_state().entities()).truncate(1);
                     self.client_state.follow_mut(client_state().dead_entities()).clear();
+                    self.client_state.follow_mut(client_state().ground_items()).clear();
+                    self.pending_ground_items.clear();
+                    *self.client_state.follow_mut(client_state().item_obtain_notification()) = None;
+                    *self.client_state.follow_mut(client_state().buffered_pickup_item()) = None;
 
                     // Close any remaining dialogs.
                     self.interface.close_window_with_class(WindowClass::Dialog);
@@ -1450,6 +1577,32 @@ impl Client {
                         };
 
                         self.particle_holder.spawn_particle(particle);
+                    }
+                }
+                NetworkEvent::EntityPickUpItem {
+                    entity_id,
+                    item_entity_id,
+                } => {
+                    let item_position = self
+                        .client_state
+                        .follow(client_state().ground_items())
+                        .iter()
+                        .find(|item| item.get_entity_id() == item_entity_id)
+                        .map(|item| item.get_tile_position());
+
+                    if let Some(entity) = self
+                        .client_state
+                        .follow_mut(client_state().entities())
+                        .iter_mut()
+                        .find(|entity| entity.get_entity_id() == entity_id)
+                    {
+                        if let Some(item_position) = item_position {
+                            entity.rotate_towards(item_position);
+                        }
+
+                        if matches!(entity.get_entity_type(), EntityType::Player | EntityType::Hidden) {
+                            entity.set_pickup(client_tick);
+                        }
                     }
                 }
                 NetworkEvent::HealEffect { entity_id, heal_amount } => {
@@ -1543,6 +1696,40 @@ impl Client {
                     // that you already have the sell window
                     // should allow you to sell the new
                     // amount of items.
+                }
+                NetworkEvent::ItemObtained {
+                    item_id,
+                    count,
+                    is_identified,
+                } => {
+                    let name = self
+                        .library
+                        .get::<ItemName>(ItemNameKey {
+                            item_id,
+                            is_identified,
+                        })
+                        .to_string();
+                    let message = format!("You got {name} ({count}).");
+                    self.client_state
+                        .follow_mut(client_state().chat_messages())
+                        .push(ChatMessage::new(message, MessageColor::Information));
+
+                    let resource_name = self.library.get::<ItemResource>(ItemResourceKey {
+                        item_id,
+                        is_identified,
+                    });
+                    let full_path = format!("유저인터페이스\\item\\{resource_name}.bmp");
+                    let texture =
+                        self.async_loader
+                            .request_item_sprite_load(ItemLocation::Inventory, item_id, &full_path, ImageType::Color);
+                    let metadata = ResourceMetadata { texture, name };
+
+                    *self.client_state.follow_mut(client_state().item_obtain_notification()) = Some(ItemObtainNotification {
+                        item_id,
+                        metadata,
+                        count,
+                        received_at: client_tick,
+                    });
                 }
                 NetworkEvent::InventoryItemRemoved { index, amount, .. } => {
                     self.client_state.follow_mut(client_state().inventory()).remove_item(index, amount);
@@ -2066,6 +2253,7 @@ impl Client {
 
                     // Unbuffer any buffered attack.
                     *self.client_state.follow_mut(client_state().buffered_attack_entity()) = None;
+                    *self.client_state.follow_mut(client_state().buffered_pickup_item()) = None;
                 }
                 InputEvent::PlayerInteract { entity_id } => {
                     let entity = self
@@ -2097,6 +2285,54 @@ impl Client {
                             }),
                             _ => Ok(()),
                         };
+                    }
+                }
+                InputEvent::PickUpItem { entity_id } => {
+                    self.mouse_cursor.set_temporary_override(
+                        MouseCursorState::Grab,
+                        Some(PICKUP_CURSOR_CLICK_FRAME),
+                        PICKUP_CURSOR_CLICK_DURATION_MS,
+                        client_tick,
+                    );
+
+                    if let Some(map) = &self.map {
+                        let player_position = self.client_state.try_follow(this_entity()).map(|player| player.get_tile_position());
+                        let item_position = self
+                            .client_state
+                            .follow(client_state().ground_items())
+                            .iter()
+                            .find(|item| item.get_entity_id() == entity_id)
+                            .map(|item| item.get_tile_position());
+
+                        if let (Some(player_position), Some(item_position)) = (player_position, item_position) {
+                            let in_range =
+                                player_position.x.abs_diff(item_position.x).max(player_position.y.abs_diff(item_position.y))
+                                    <= ITEM_PICKUP_RANGE.0;
+
+                            if in_range {
+                                let _ = self.networking_system.pick_up_item(entity_id);
+                                *self.client_state.follow_mut(client_state().buffered_pickup_item()) = None;
+                                *self.client_state.follow_mut(client_state().buffered_attack_entity()) = None;
+                            } else if let Some(path) =
+                                self.path_finder
+                                    .find_walkable_path(&**map, player_position, item_position)
+                            {
+                                if let Some(nearest_tile) = path.last() {
+                                    let _ = self.networking_system.player_move(WorldPosition {
+                                        x: nearest_tile.x,
+                                        y: nearest_tile.y,
+                                        direction: Direction::North,
+                                    });
+
+                                    *self.client_state.follow_mut(client_state().buffered_pickup_item()) = Some(entity_id);
+                                    *self.client_state.follow_mut(client_state().buffered_attack_entity()) = None;
+                                } else {
+                                    *self.client_state.follow_mut(client_state().buffered_pickup_item()) = None;
+                                }
+                            } else {
+                                *self.client_state.follow_mut(client_state().buffered_pickup_item()) = None;
+                            }
+                        }
                     }
                 }
                 #[cfg(feature = "debug")]
@@ -2425,13 +2661,47 @@ impl Client {
                         .find(|entity| entity.get_entity_id() == entity_id)
                     {
                         entity.set_animation_data(animation_data);
+                    } else if let Some(entity) = self
+                        .client_state
+                        .follow_mut(client_state().dead_entities())
+                        .iter_mut()
+                        .find(|entity| entity.get_entity_id() == entity_id)
+                    {
+                        entity.set_animation_data(animation_data);
+                    } else if let Some(item) = self
+                        .client_state
+                        .follow_mut(client_state().ground_items())
+                        .iter_mut()
+                        .find(|item| item.get_entity_id() == entity_id)
+                    {
+                        item.set_animation_data(animation_data);
+                    }
+                }
+                (LoaderId::GroundItemAnimation(entity_id), LoadableResource::AnimationData(animation_data)) => {
+                    if let Some(item) = self
+                        .client_state
+                        .follow_mut(client_state().ground_items())
+                        .iter_mut()
+                        .find(|item| item.get_entity_id() == entity_id)
+                    {
+                        item.set_animation_data(animation_data);
                     }
                 }
                 (LoaderId::ItemSprite(item_id), LoadableResource::ItemSprite { texture, location }) => match location {
                     ItemLocation::Inventory => {
+                        let texture = texture.clone();
                         self.client_state
                             .follow_mut(client_state().inventory())
-                            .update_item_sprite(item_id, texture);
+                            .update_item_sprite(item_id, texture.clone());
+
+                        if let Some(notification) = self
+                            .client_state
+                            .follow_mut(client_state().item_obtain_notification())
+                            .as_mut()
+                            && notification.item_id == item_id
+                        {
+                            notification.metadata.texture = Some(texture);
+                        }
                     }
                     ItemLocation::Shop => {
                         self.client_state
@@ -2445,7 +2715,22 @@ impl Client {
                     match self.client_state.try_follow(this_player()).is_none() {
                         true => {
                             // Load of main menu map
-                            let map = self.map.insert(map);
+                            let map = map;
+
+                            let pending = std::mem::take(&mut self.pending_ground_items);
+                            if !pending.is_empty() {
+                                let ground_items = self.client_state.follow_mut(client_state().ground_items());
+                                for item in pending {
+                                    Self::spawn_ground_item(
+                                        &map,
+                                        item,
+                                        client_tick,
+                                        &self.library,
+                                        &self.async_loader,
+                                        ground_items,
+                                    );
+                                }
+                            }
 
                             map.set_ambient_sound_sources(&self.audio_engine);
                             self.audio_engine.play_background_music_track(DEFAULT_BACKGROUND_MUSIC);
@@ -2457,10 +2742,27 @@ impl Client {
 
                             self.start_camera.set_focus_point(START_CAMERA_FOCUS_POINT);
                             self.directional_shadow_camera.set_level_bound(map.get_level_bound());
+
+                            self.map = Some(map);
                         }
                         false => {
                             // Normal map switch
-                            let map = self.map.insert(map);
+                            let map = map;
+
+                            let pending = std::mem::take(&mut self.pending_ground_items);
+                            if !pending.is_empty() {
+                                let ground_items = self.client_state.follow_mut(client_state().ground_items());
+                                for item in pending {
+                                    Self::spawn_ground_item(
+                                        &map,
+                                        item,
+                                        client_tick,
+                                        &self.library,
+                                        &self.async_loader,
+                                        ground_items,
+                                    );
+                                }
+                            }
 
                             map.set_ambient_sound_sources(&self.audio_engine);
                             self.audio_engine.play_background_music_track(map.background_music_track_name());
@@ -2472,12 +2774,14 @@ impl Client {
                                 // is not `None`.
                                 let player = self.client_state.follow_mut(this_entity().manually_asserted());
 
-                                player.set_position(map, position, client_tick);
+                                player.set_position(&map, position, client_tick);
                                 self.player_camera.set_focus_point(player.get_position());
                             }
 
                             self.directional_shadow_camera.set_level_bound(map.get_level_bound());
                             let _ = self.networking_system.map_loaded();
+
+                            self.map = Some(map);
                         }
                     }
                 }
@@ -2568,10 +2872,19 @@ impl Client {
                     .iter_mut()
                     .for_each(|entity| entity.update(&self.audio_engine, self.map.as_ref().unwrap(), current_camera, client_tick));
 
+                self.client_state
+                    .follow_mut(client_state().ground_items())
+                    .iter_mut()
+                    .for_each(|item| item.update(client_tick));
+
                 // Remove entities that have finished fading out.
                 self.client_state
                     .follow_mut(client_state().entities())
                     .retain(|entity| !entity.is_fading_out_complete(client_tick));
+
+                self.client_state
+                    .follow_mut(client_state().dead_entities())
+                    .retain(|entity| !entity.should_despawn_dead(DEAD_ENTITY_TTL_MS));
 
                 // Buffered attack (the player tried attacking while out of range).
                 let auto_attack = *self.client_state.follow(client_state().game_settings().auto_attack());
@@ -2588,6 +2901,18 @@ impl Client {
                             *buffered_attack_entity = Some(entity_id);
                         }
                     }
+
+                    let buffered_pickup_item = *self.client_state.follow(client_state().buffered_pickup_item());
+                    if let Some(item_entity_id) = buffered_pickup_item
+                        && self
+                            .client_state
+                            .follow(client_state().ground_items())
+                            .iter()
+                            .any(|item| item.get_entity_id() == item_entity_id)
+                    {
+                        let _ = self.networking_system.pick_up_item(item_entity_id);
+                    }
+                    *self.client_state.follow_mut(client_state().buffered_pickup_item()) = None;
                 }
             }
 
@@ -2628,6 +2953,16 @@ impl Client {
             let shadow_method = *self.client_state.follow(client_state().graphics_settings().shadow_method());
             let shadow_detail = *self.client_state.follow(client_state().graphics_settings().shadow_detail());
             let sdsm_enabled = *self.client_state.follow(client_state().graphics_settings().sdsm());
+
+            // WORKAROUND: Disable SDSM on Vulkan/MoltenVK due to synchronization bug
+            // SDSM compute shaders don't properly sync with shadow rendering on Vulkan
+            // backend. This causes shadows to disappear when camera is not
+            // moving. TODO: Add proper memory barriers between SDSM compute
+            // pass and shadow rendering
+            #[cfg(target_os = "macos")]
+            let use_sdsm = false;
+
+            #[cfg(not(target_os = "macos"))]
             let use_sdsm = sdsm_enabled & !self.player_camera.is_rotating_or_zooming_fast();
 
             let ambient_light_color = map.ambient_light_color();
@@ -2681,6 +3016,16 @@ impl Client {
                 .update(self.client_state.follow(client_state().entities()), delta_time as f32);
 
             self.mouse_cursor.update(client_tick);
+
+            let should_clear_item_obtain = self
+                .client_state
+                .follow(client_state().item_obtain_notification())
+                .as_ref()
+                .is_some_and(|notification| client_tick.0.wrapping_sub(notification.received_at.0) >= ITEM_OBTAIN_POPUP_TTL_MS);
+
+            if should_clear_item_obtain {
+                *self.client_state.follow_mut(client_state().item_obtain_notification()) = None;
+            }
 
             let walk_indicator_color = *self.client_state.follow(client_state().world_theme().indicator().walking());
 
@@ -2883,6 +3228,13 @@ impl Client {
                 };
 
                 #[cfg_attr(feature = "debug", korangar_debug::debug_condition(render_options.show_entities))]
+                map.render_ground_items(
+                    &mut self.entity_instructions,
+                    self.client_state.follow(client_state().ground_items()),
+                    entity_camera,
+                );
+
+                #[cfg_attr(feature = "debug", korangar_debug::debug_condition(render_options.show_entities))]
                 map.render_entities(
                     &mut self.entity_instructions,
                     self.client_state.follow(client_state().entities()),
@@ -2990,23 +3342,36 @@ impl Client {
 
                     let is_interface_hovered = interface_frame.is_interface_hovered();
 
-                    let cursor_state = match input_report.mouse_target {
-                        _ if is_rotating_camera => MouseCursorState::RotateCamera,
-                        PickerTarget::Entity(entity_id) if !is_interface_hovered => self
-                            .client_state
-                            .follow(client_state().entities())
-                            .iter()
-                            .find(|entity| entity.get_entity_id() == entity_id)
-                            .map(|entity| match entity.get_entity_type() {
-                                EntityType::Npc => MouseCursorState::Dialog,
-                                EntityType::Warp => MouseCursorState::Warp,
-                                EntityType::Monster => MouseCursorState::Attack,
-                                _ => MouseCursorState::Default,
-                            })
-                            .unwrap_or(MouseCursorState::Default),
-                        _ => MouseCursorState::Default,
+                    let (cursor_state, cursor_frame) = match input_report.mouse_target {
+                        _ if is_rotating_camera => (MouseCursorState::RotateCamera, None),
+                        PickerTarget::Entity(entity_id) if !is_interface_hovered => {
+                            if self
+                                .client_state
+                                .follow(client_state().ground_items())
+                                .iter()
+                                .any(|item| item.get_entity_id() == entity_id)
+                            {
+                                (MouseCursorState::Grab, Some(PICKUP_CURSOR_HOVER_FRAME))
+                            } else {
+                                let cursor_state = self
+                                    .client_state
+                                    .follow(client_state().entities())
+                                    .iter()
+                                    .find(|entity| entity.get_entity_id() == entity_id)
+                                    .map(|entity| match entity.get_entity_type() {
+                                        EntityType::Npc => MouseCursorState::Dialog,
+                                        EntityType::Warp => MouseCursorState::Warp,
+                                        EntityType::Monster => MouseCursorState::Attack,
+                                        _ => MouseCursorState::Default,
+                                    })
+                                    .unwrap_or(MouseCursorState::Default);
+                                (cursor_state, None)
+                            }
+                        }
+                        _ => (MouseCursorState::Default, None),
                     };
-                    self.mouse_cursor.set_state(cursor_state, client_tick);
+                    self.mouse_cursor
+                        .set_state_with_override(cursor_state, cursor_frame, client_tick);
 
                     if let Some(mouse_button) = input_report.mouse_click {
                         if is_interface_hovered {
@@ -3018,7 +3383,17 @@ impl Client {
                                 match input_report.mouse_target {
                                     PickerTarget::Nothing => {}
                                     PickerTarget::Entity(entity_id) => {
-                                        self.input_event_buffer.push(InputEvent::PlayerInteract { entity_id })
+                                        let is_ground_item = self
+                                            .client_state
+                                            .follow(client_state().ground_items())
+                                            .iter()
+                                            .any(|item| item.get_entity_id() == entity_id);
+
+                                        if is_ground_item {
+                                            self.input_event_buffer.push(InputEvent::PickUpItem { entity_id })
+                                        } else {
+                                            self.input_event_buffer.push(InputEvent::PlayerInteract { entity_id })
+                                        }
                                     }
                                     PickerTarget::Tile { x, y } => {
                                         let destination = TilePosition { x, y };
@@ -3108,13 +3483,41 @@ impl Client {
                     }
                     PickerTarget::Entity(entity_id) => {
                         if !interface_frame.is_interface_hovered() && is_mouse_mode_default {
-                            let entity = self
+                            let ground_item = self
+                                .client_state
+                                .follow(client_state().ground_items())
+                                .iter()
+                                .find(|item| item.get_entity_id() == entity_id);
+
+                            if let Some(item) = ground_item {
+                                let name = self
+                                    .library
+                                    .get::<ItemName>(ItemNameKey {
+                                        item_id: item.item_id,
+                                        is_identified: item.is_identified,
+                                    })
+                                    .to_string();
+                                let count = item.count.max(1);
+                                let text = format!("{name}: {count}ea");
+
+                                let offset = ScreenPosition {
+                                    left: 15.0 * scaling.get_factor(),
+                                    top: 15.0 * scaling.get_factor(),
+                                };
+
+                                self.middle_interface_renderer.render_text(
+                                    &text,
+                                    input_report.mouse_position + offset,
+                                    Color::WHITE,
+                                    FontSize(16.0),
+                                    AlignHorizontal::Mid,
+                                );
+                            } else if let Some(entity) = self
                                 .client_state
                                 .follow(client_state().entities())
                                 .iter()
-                                .find(|entity| entity.get_entity_id() == entity_id);
-
-                            if let Some(entity) = entity {
+                                .find(|entity| entity.get_entity_id() == entity_id)
+                            {
                                 // Since the buffered attack entity will render its status anyway,
                                 // we make sure not to render it here again if it's the same.
                                 if !buffered_attack_entity.is_some_and(|id| id == entity_id) {
@@ -3161,6 +3564,92 @@ impl Client {
                     tooltip_theme,
                     input_report.mouse_position,
                 );
+
+                if self.show_interface {
+                    if let Some(notification) = self
+                        .client_state
+                        .follow(client_state().item_obtain_notification())
+                        .as_ref()
+                    {
+                        let interface_theme = self.client_state.follow(client_theme());
+                        let tooltip_theme = &interface_theme.tooltip;
+                        let scaling_factor = scaling.get_factor();
+                        let font_size = tooltip_theme.font_size;
+                        let text_color = tooltip_theme.foreground_color;
+                        let highlight_color = tooltip_theme.highlight_color;
+                        let border_color = tooltip_theme.shadow_color;
+                        let background_color = tooltip_theme.background_color;
+                        let text = format!("{} - {} obtained.", notification.metadata.name, notification.count);
+                        let text_size = self.font_loader.layout_text(
+                            &text,
+                            text_color,
+                            highlight_color,
+                            FontSize(font_size.0 * scaling_factor),
+                            1.0,
+                            None,
+                            None,
+                        );
+
+                        let icon_size = 24.0 * scaling_factor;
+                        let padding_x = 10.0 * scaling_factor;
+                        let padding_y = 4.0 * scaling_factor;
+                        let gap = 6.0 * scaling_factor;
+                        let content_height = icon_size.max(text_size.y);
+                        let popup_height = content_height + padding_y * 2.0;
+                        let popup_width = padding_x * 2.0 + icon_size + gap + text_size.x;
+                        let popup_left = (screen_size.width - popup_width) / 2.0;
+                        let popup_top = 50.0 * scaling_factor;
+                        let border = tooltip_theme.border * scaling_factor;
+
+                        self.top_interface_renderer.render_rectangle(
+                            ScreenPosition {
+                                left: popup_left - border,
+                                top: popup_top - border,
+                            },
+                            ScreenSize {
+                                width: popup_width + border * 2.0,
+                                height: popup_height + border * 2.0,
+                            },
+                            border_color,
+                        );
+                        self.top_interface_renderer.render_rectangle(
+                            ScreenPosition {
+                                left: popup_left,
+                                top: popup_top,
+                            },
+                            ScreenSize {
+                                width: popup_width,
+                                height: popup_height,
+                            },
+                            background_color,
+                        );
+
+                        if let Some(texture) = notification.metadata.texture.as_ref() {
+                            let icon_position = ScreenPosition {
+                                left: popup_left + padding_x,
+                                top: popup_top + (popup_height - icon_size) / 2.0,
+                            };
+                            self.top_interface_renderer.render_sprite(
+                                texture.clone(),
+                                icon_position,
+                                ScreenSize {
+                                    width: icon_size,
+                                    height: icon_size,
+                                },
+                                ScreenClip::unbound(),
+                                Color::WHITE,
+                                true,
+                            );
+                        }
+
+                        let text_position = ScreenPosition {
+                            left: popup_left + padding_x + icon_size + gap,
+                            top: popup_top + (popup_height - text_size.y) / 2.0,
+                        };
+                        self.top_interface_renderer
+                            .render_text(&text, text_position, text_color, font_size, AlignHorizontal::Left);
+                    }
+                }
 
                 drop(interface_frame);
 

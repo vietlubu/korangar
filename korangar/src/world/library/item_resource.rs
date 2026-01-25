@@ -7,6 +7,8 @@ use super::item_info::ItemInfo;
 use super::{Library, Table};
 use crate::loaders::GameFileLoader;
 
+pub const ITEM_SPRITE_PREFIX: &str = "아이템\\";
+
 static DEFAULT_STRING: &str = "사과"; // Apple
 static DEFAULT_VALUE: ItemResource = ItemResource(Cow::Borrowed(DEFAULT_STRING));
 
