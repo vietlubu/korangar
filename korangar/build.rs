@@ -183,6 +183,7 @@ fn main() {
 
     println!("cargo:rerun-if-changed={}", shader_dir.display());
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_OS");
 
     if output_dir.exists() {
         fs::remove_dir_all(&output_dir).expect("failed to remove output directory");
