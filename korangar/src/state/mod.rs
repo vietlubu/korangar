@@ -525,19 +525,17 @@ pub fn this_player() -> impl Path<ClientState, Player, false> {
 
     impl Path<ClientState, Player, false> for CustomPath {
         fn follow<'a>(&self, state: &'a ClientState) -> Option<&'a Player> {
-            // TODO: Select our player better.
-            match state.entities.first()? {
+            state.entities.iter().find_map(|entity| match entity {
                 Entity::Player(player) => Some(player),
-                _ => unreachable!(),
-            }
+                _ => None,
+            })
         }
 
         fn follow_mut<'a>(&self, state: &'a mut ClientState) -> Option<&'a mut Player> {
-            // TODO: Select our player better.
-            match state.entities.first_mut()? {
+            state.entities.iter_mut().find_map(|entity| match entity {
                 Entity::Player(player) => Some(player),
-                _ => unreachable!(),
-            }
+                _ => None,
+            })
         }
     }
 
@@ -557,13 +555,13 @@ pub fn this_entity() -> impl Path<ClientState, Entity, false> {
 
     impl Path<ClientState, Entity, false> for CustomPath {
         fn follow<'a>(&self, state: &'a ClientState) -> Option<&'a Entity> {
-            // TODO: Select our player better.
-            state.entities.first()
+            state.entities.iter().find(|entity| matches!(entity, Entity::Player(_)))
         }
 
         fn follow_mut<'a>(&self, state: &'a mut ClientState) -> Option<&'a mut Entity> {
-            // TODO: Select our player better.
-            state.entities.first_mut()
+            state.entities
+                .iter_mut()
+                .find(|entity| matches!(entity, Entity::Player(_)))
         }
     }
 

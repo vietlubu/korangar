@@ -250,6 +250,14 @@ impl Map {
         self.tiles.get(position.x as usize + position.y as usize * self.width as usize)
     }
 
+    pub fn width(&self) -> u16 {
+        self.width
+    }
+
+    pub fn height(&self) -> u16 {
+        self.height
+    }
+
     pub fn background_music_track_name(&self) -> Option<&str> {
         self.background_music_track_name.as_deref()
     }

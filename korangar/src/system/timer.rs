@@ -95,6 +95,10 @@ impl GameTimer {
         delta_time
     }
 
+    pub fn frames_per_second(&self) -> usize {
+        self.frames_per_second
+    }
+
     #[cfg(feature = "debug")]
     pub fn last_frames_per_second(&self) -> usize {
         self.frames_per_second

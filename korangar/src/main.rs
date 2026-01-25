@@ -42,6 +42,7 @@ mod renderer;
 mod settings;
 mod system;
 mod world;
+mod benchmark;
 
 use std::io::Cursor;
 use std::net::{SocketAddr, ToSocketAddrs};
@@ -105,6 +106,7 @@ use crate::interface::cursor::{MouseCursor, MouseCursorState};
 use crate::interface::resource::{ItemSource, SkillSource};
 use crate::interface::windows::*;
 use crate::loaders::*;
+use crate::benchmark::{BenchmarkState, MIN_BENCHMARK_COUNT};
 #[cfg(feature = "debug")]
 use crate::renderer::DebugMarkerRenderer;
 use crate::renderer::{AlignHorizontal, EffectRenderer, GameInterfaceRenderer};
@@ -138,6 +140,91 @@ const INITIAL_SCALING_FACTOR: Scaling = Scaling::new(1.0);
 const FALLBACK_PACKET_VERSION: SupportedPacketVersion = SupportedPacketVersion::_20220406;
 
 static ICON_DATA: &[u8] = include_bytes!("../archive/data/icon.png");
+
+struct CliConfig {
+    sync_cache: bool,
+    benchmark_count: Option<usize>,
+    benchmark_effect: Option<String>,
+    default_map: String,
+}
+
+fn normalize_benchmark_effect(value: &str) -> Option<String> {
+    let mut path = value.trim().replace('\\', "/");
+    if path.is_empty() {
+        return None;
+    }
+
+    let prefix = "data/texture/effect/";
+    if path.to_lowercase().starts_with(prefix) {
+        path = path[prefix.len()..].to_string();
+    }
+
+    if !path.to_lowercase().ends_with(".str") {
+        path.push_str(".str");
+    }
+
+    Some(path.replace('/', "\\"))
+}
+
+fn parse_cli() -> CliConfig {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut sync_cache = false;
+    let mut benchmark_enabled = false;
+    let mut benchmark_count: Option<usize> = None;
+    let mut benchmark_effect: Option<String> = None;
+
+    let mut index = 0;
+    while index < args.len() {
+        let arg = &args[index];
+        if arg == "sync-cache" {
+            sync_cache = true;
+        } else if arg == "--benchmark" {
+            benchmark_enabled = true;
+        } else if let Some(value) = arg.strip_prefix("--benchmark-effect=") {
+            benchmark_enabled = true;
+            benchmark_effect = normalize_benchmark_effect(value);
+        } else if let Some(value) = arg.strip_prefix("--benchmark-count=") {
+            if let Ok(count) = value.parse::<usize>() {
+                benchmark_enabled = true;
+                benchmark_count = Some(count);
+            }
+        } else if arg == "--benchmark-effect" {
+            if let Some(value) = args.get(index + 1) {
+                benchmark_enabled = true;
+                benchmark_effect = normalize_benchmark_effect(value);
+                index += 1;
+            }
+        } else if arg == "--benchmark-count" {
+            if let Some(value) = args.get(index + 1) {
+                if let Ok(count) = value.parse::<usize>() {
+                    benchmark_enabled = true;
+                    benchmark_count = Some(count);
+                }
+                index += 1;
+            }
+        }
+        index += 1;
+    }
+
+    let benchmark_count = benchmark_enabled.then(|| {
+        benchmark_count
+            .unwrap_or(MIN_BENCHMARK_COUNT)
+            .max(MIN_BENCHMARK_COUNT)
+    });
+
+    let default_map = if benchmark_enabled {
+        "prontera".to_string()
+    } else {
+        DEFAULT_MAP.to_string()
+    };
+
+    CliConfig {
+        sync_cache,
+        benchmark_count,
+        benchmark_effect,
+        default_map,
+    }
+}
 
 /// CTR+C was sent, and the client is supposed to close.
 pub static SHUTDOWN_SIGNAL: LazyLock<AtomicBool> = LazyLock::new(|| AtomicBool::new(false));
@@ -321,10 +408,11 @@ fn main() {
         }
     });
 
-    let args: Vec<String> = std::env::args().collect();
-    let sync_cache = args.len() > 1 && &args[1] == "sync-cache";
+    let cli = parse_cli();
 
-    let Some(mut client) = Client::init(sync_cache) else {
+    let Some(mut client) =
+        Client::init(cli.sync_cache, cli.default_map, cli.benchmark_count, cli.benchmark_effect)
+    else {
         return;
     };
 
@@ -440,12 +528,19 @@ struct Client {
     device: Device,
     window: Option<Arc<Window>>,
 
+    default_map: String,
+    benchmark: Option<BenchmarkState>,
     map: Option<Box<Map>>,
     client_state: Context<ClientState>,
 }
 
 impl Client {
-    fn init(sync_cache: bool) -> Option<Self> {
+    fn init(
+        sync_cache: bool,
+        default_map: String,
+        benchmark_count: Option<usize>,
+        benchmark_effect: Option<String>,
+    ) -> Option<Self> {
         time_phase!("load graphics settings", {
             let picker_value = Arc::new(AtomicU64::new(0));
             let directional_shadow_partitions = Arc::new(Mutex::new([DirectionalShadowPartition::default(); PARTITION_COUNT]));
@@ -691,8 +786,8 @@ impl Client {
 
             let particle_holder = ParticleHolder::default();
             let point_light_manager = PointLightManager::new();
-            let effect_holder = EffectHolder::default();
-            let path_finder = PathFinder::default();
+            let mut effect_holder = EffectHolder::default();
+            let mut path_finder = PathFinder::default();
 
             let point_light_set_buffer = ResourceSetBuffer::default();
             let directional_shadow_object_set_buffer = ResourceSetBuffer::default();
@@ -729,7 +824,7 @@ impl Client {
         time_phase!("load default map", {
             let map = map_loader
                 .load(
-                    DEFAULT_MAP.to_string(),
+                    default_map.clone(),
                     &model_loader,
                     texture_loader.clone(),
                     video_loader,
@@ -744,7 +839,7 @@ impl Client {
         });
 
         time_phase!("create client state", {
-            let client_state = Context::new(ClientState::new(
+            let mut client_state = Context::new(ClientState::new(
                 &game_file_loader,
                 graphics_settings.clone(),
                 #[cfg(feature = "debug")]
@@ -759,6 +854,23 @@ impl Client {
             ClientState::path().login_settings(),
             ClientState::path().client_info(),
         ));
+
+        let mut benchmark = benchmark_count.map(|count| BenchmarkState::new(count, benchmark_effect));
+        if let Some(benchmark) = benchmark.as_mut() {
+            let client_tick = game_timer.get_client_tick();
+            benchmark.spawn(
+                &map,
+                &mut path_finder,
+                &mut client_state,
+                &async_loader,
+                &library,
+                &effect_loader,
+                &texture_loader,
+                &mut effect_holder,
+                client_tick,
+            );
+            start_camera.set_focus_point(benchmark.focus_point());
+        }
 
         Some(Self {
             game_file_loader,
@@ -840,6 +952,8 @@ impl Client {
             device,
             window: None,
 
+            default_map,
+            benchmark,
             map: Some(map),
             client_state,
         })
@@ -1066,7 +1180,7 @@ impl Client {
                     self.interface.close_all_windows_except(DEBUG_WINDOWS);
 
                     self.async_loader
-                        .request_map_load(DEFAULT_MAP.to_string(), Some(TilePosition::new(0, 0)));
+                        .request_map_load(self.default_map.clone(), Some(TilePosition::new(0, 0)));
                 }
                 NetworkEvent::InitialStats {
                     strength_stat_points_cost,
@@ -2589,6 +2703,15 @@ impl Client {
                         }
                     }
                 }
+
+                if let Some(benchmark) = self.benchmark.as_mut() {
+                    benchmark.update_walkers(
+                        map,
+                        &mut self.path_finder,
+                        &mut self.client_state,
+                        client_tick,
+                    );
+                }
             }
 
             #[cfg(feature = "debug")]
@@ -3190,6 +3313,24 @@ impl Client {
                         world_theme.overlay.font_size,
                         AlignHorizontal::Left,
                     );
+                }
+
+                if let Some(benchmark) = self.benchmark.as_mut() {
+                    let world_theme = self.client_state.follow(client_state().world_theme());
+                    benchmark.update_metrics(delta_time, self.game_timer.frames_per_second());
+                    let lines = benchmark.overlay_lines();
+                    let font_size = world_theme.overlay.font_size;
+                    let line_height = font_size.0 * 1.2;
+
+                    for (index, line) in lines.iter().enumerate() {
+                        self.top_interface_renderer.render_text(
+                            line,
+                            world_theme.overlay.text_offset + ScreenPosition::only_top(line_height * index as f32),
+                            world_theme.overlay.foreground_color,
+                            font_size,
+                            AlignHorizontal::Left,
+                        );
+                    }
                 }
 
                 if self.show_interface {
