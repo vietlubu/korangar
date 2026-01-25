@@ -78,16 +78,7 @@ impl Actions {
         // `animation_state.time` can always be properly represented.
         let frame = (f64::from(animation_state.time) / f64::from(factor)) as usize;
 
-        self.render_sprite_frame(
-            renderer,
-            sprite,
-            action_index,
-            frame,
-            position,
-            screen_clip,
-            color,
-            scaling,
-        );
+        self.render_sprite_frame(renderer, sprite, action_index, frame, position, screen_clip, color, scaling);
     }
 
     pub fn render_sprite_frame(

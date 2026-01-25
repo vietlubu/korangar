@@ -605,14 +605,11 @@ where
         let is_identified = is_identified != 0;
         let display_count = count.max(1);
 
-        vec![
-            NetworkEvent::IventoryItemAdded { item },
-            NetworkEvent::ItemObtained {
-                item_id,
-                count: display_count,
-                is_identified,
-            },
-        ]
+        vec![NetworkEvent::IventoryItemAdded { item }, NetworkEvent::ItemObtained {
+            item_id,
+            count: display_count,
+            is_identified,
+        }]
     })?;
     packet_handler.register(|packet: RemoveItemFromInventoryPacket| NetworkEvent::InventoryItemRemoved {
         reason: packet.remove_reason,

@@ -194,9 +194,7 @@ impl FadeState {
         match self {
             FadeState::Opaque => true,
             FadeState::Fading {
-                start_time,
-                duration_ms,
-                ..
+                start_time, duration_ms, ..
             } => {
                 if *duration_ms == 0 {
                     return true;

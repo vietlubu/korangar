@@ -104,12 +104,7 @@ impl MouseCursor {
         }
     }
 
-    pub fn set_state_with_override(
-        &mut self,
-        state: MouseCursorState,
-        frame_override: Option<usize>,
-        client_tick: ClientTick,
-    ) {
+    pub fn set_state_with_override(&mut self, state: MouseCursorState, frame_override: Option<usize>, client_tick: ClientTick) {
         let mut state = state;
         let mut frame_override = frame_override;
 

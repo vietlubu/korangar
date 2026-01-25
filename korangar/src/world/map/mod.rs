@@ -428,12 +428,7 @@ impl Map {
     }
 
     #[cfg_attr(feature = "debug", korangar_debug::profile)]
-    pub fn render_ground_items(
-        &self,
-        instructions: &mut Vec<EntityInstruction>,
-        items: &[GroundItem],
-        camera: &dyn Camera,
-    ) {
+    pub fn render_ground_items(&self, instructions: &mut Vec<EntityInstruction>, items: &[GroundItem], camera: &dyn Camera) {
         items.iter().for_each(|item| item.render(instructions, camera));
     }
 
