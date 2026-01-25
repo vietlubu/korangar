@@ -54,6 +54,9 @@ winit = { workspace = true }
 sevenz-rust2 = { workspace = true, features = ["compress"] }
 
 # Platform-specific dependencies
+# NOTE: When changing graphics backend features (vulkan-portability, etc.),
+# always run `cargo clean -p korangar` to avoid shader cache corruption issues.
+# The build system may not properly detect backend changes and recompile shaders.
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 wgpu = { workspace = true, features = ["static-dxc", "spirv", "vulkan-portability"] }
 
